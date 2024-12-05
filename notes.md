@@ -1,5 +1,7 @@
 ## Tools
 
-Microsoft live share extension
-Compass MongoDB
-NPM
+- Microsoft live share extension
+- Compass MongoDB
+- NPM
+
+
