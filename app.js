@@ -105,16 +105,20 @@ const authenticate = (req, res, next) => {
 // Routes
 // User Registration
 app.post("/users/register", async (req, res) => {
-  try {
-    const { username, password, role } = req.body;
-    const user = new User({ username, password, role });
-    await user.save();
-    res.status(201).send("User registered successfully.");
-  } catch (error) {
-    res.status(400).send(error);
-  }
-});
-
+    try {
+      const { username, password, role } = req.body;
+      const user = new User({ username, password, role });
+      await user.save();
+      res.status(201).send("User registered successfully.");
+    } catch (error) {
+      if (error.code === 11000) {
+        res.status(400).send("Username already exists. Please choose a different username.");
+      } else {
+        res.status(400).send(error);
+      }
+    }
+  });
+  
 // User Login
 app.post("/users/login", async (req, res) => {
   try {
