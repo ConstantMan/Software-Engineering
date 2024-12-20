@@ -66,6 +66,9 @@ const FestivalSchema = new mongoose.Schema({
     default: "CREATED",
   },
 });
+
+const Festival = mongoose.model("Festival", FestivalSchema);
+
 const PerformanceSchema = new mongoose.Schema({
   festival: {
     type: mongoose.Schema.Types.ObjectId,
@@ -306,19 +309,22 @@ app.post(
   }
 );
 
-// Get Festival by ID
 app.get("/festivals/:id", authenticate, async (req, res) => {
   try {
+    console.log("Fetching festival with ID:", req.params.id); // Debug
     const festival = await Festival.findById(req.params.id).populate(
       "organizers",
       "username"
     );
     if (!festival) return res.status(404).send("Festival not found.");
+    console.log("Fetched Festival:", festival); // Debug
     res.status(200).send(festival);
   } catch (error) {
+    console.error("Error fetching festival:", error); // Debug
     res.status(500).send(error);
   }
 });
+
 
 // Start Assignment Phase
 app.post(
