@@ -13,12 +13,11 @@ const PORT = process.env.PORT || 3000;
 // Middleware
 app.use(bodyParser.json());
 
-  // Database Connection
+// Database Connection
 mongoose
-.connect(process.env.MONGO_URI)
-.then(() => console.log("Connected to MongoDB"))
-.catch((err) => console.error("Could not connect to MongoDB:", err));
-
+  .connect(process.env.MONGO_URI)
+  .then(() => console.log("Connected to MongoDB"))
+  .catch((err) => console.error("Could not connect to MongoDB:", err));
 
 // Models
 const UserSchema = new mongoose.Schema({
@@ -112,16 +111,48 @@ const PerformanceSchema = new mongoose.Schema({
 const Performance = mongoose.model("Performance", PerformanceSchema);
 
 // Authentication Middleware
-const authenticate = (req, res, next) => {
+// Authentication Middleware with Advanced Token Validation
+const authenticate = async (req, res, next) => {
   const token = req.headers.authorization?.split(" ")[1];
   if (!token) return res.status(401).send("Access denied. No token provided.");
 
   try {
+    // Verify token
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    // Find user in the database
+    const user = await User.findById(decoded._id);
+    if (!user) {
+      return res.status(403).send("Invalid token. User not found.");
+    }
+
+    // Check if the account is active
+    if (user.accountStatus === "INACTIVE") {
+      return res
+        .status(403)
+        .send("Account is inactive. Contact an administrator.");
+    }
+
+    // Check if the token belongs to the requesting user
+    if (req.user && req.user._id !== decoded._id) {
+      // Deactivate both accounts
+      await User.findByIdAndUpdate(decoded._id, { accountStatus: "INACTIVE" });
+      await User.findByIdAndUpdate(req.user._id, { accountStatus: "INACTIVE" });
+
+      return res
+        .status(403)
+        .send("Unauthorized token usage. Both accounts deactivated.");
+    }
+
+    // Attach user data to request object
     req.user = decoded;
     next();
   } catch (err) {
-    res.status(400).send("Invalid token.");
+    if (err.name === "TokenExpiredError") {
+      return res.status(401).send("Token has expired. Please login again.");
+    } else {
+      return res.status(400).send("Invalid token.");
+    }
   }
 };
 
@@ -178,7 +209,9 @@ app.post("/users/login", async (req, res) => {
 
     // Έλεγχος κατάστασης λογαριασμού
     if (user.accountStatus === "INACTIVE") {
-      return res.status(403).send("Account is inactive. Contact an administrator.");
+      return res
+        .status(403)
+        .send("Account is inactive. Contact an administrator.");
     }
 
     // Επαλήθευση κωδικού
@@ -235,30 +268,37 @@ app.post("/users/change-password", authenticate, async (req, res) => {
 });
 
 // Change User Account Status
-app.post("/users/:id/status", authenticate, authorize(["ADMIN"]), async (req, res) => {
-  try {
-    const { status } = req.body;
+app.post(
+  "/users/:id/status",
+  authenticate,
+  authorize(["ADMIN"]),
+  async (req, res) => {
+    try {
+      const { status } = req.body;
 
-    // Επαλήθευση αν παρέχεται έγκυρη κατάσταση
-    if (!["ACTIVE", "INACTIVE"].includes(status)) {
-      return res.status(400).send("Invalid status. Use 'ACTIVE' or 'INACTIVE'.");
+      // Επαλήθευση αν παρέχεται έγκυρη κατάσταση
+      if (!["ACTIVE", "INACTIVE"].includes(status)) {
+        return res
+          .status(400)
+          .send("Invalid status. Use 'ACTIVE' or 'INACTIVE'.");
+      }
+
+      // Εύρεση του χρήστη από το ID
+      const user = await User.findById(req.params.id);
+      if (!user) {
+        return res.status(404).send("User not found.");
+      }
+
+      // Ενημέρωση της κατάστασης του λογαριασμού
+      user.accountStatus = status;
+      await user.save();
+
+      res.status(200).send(`User status updated to ${status}.`);
+    } catch (error) {
+      res.status(500).send(error.message);
     }
-
-    // Εύρεση του χρήστη από το ID
-    const user = await User.findById(req.params.id);
-    if (!user) {
-      return res.status(404).send("User not found.");
-    }
-
-    // Ενημέρωση της κατάστασης του λογαριασμού
-    user.accountStatus = status;
-    await user.save();
-
-    res.status(200).send(`User status updated to ${status}.`);
-  } catch (error) {
-    res.status(500).send(error.message);
   }
-});
+);
 
 // Delete User
 app.delete(
@@ -309,6 +349,7 @@ app.post(
   }
 );
 
+// Get Festival by id
 app.get("/festivals/:id", authenticate, async (req, res) => {
   try {
     console.log("Fetching festival with ID:", req.params.id); // Debug
@@ -324,7 +365,6 @@ app.get("/festivals/:id", authenticate, async (req, res) => {
     res.status(500).send(error);
   }
 });
-
 
 // Start Assignment Phase
 app.post(
