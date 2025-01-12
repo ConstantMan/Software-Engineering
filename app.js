@@ -680,6 +680,57 @@ app.post(
   }
 );
 
+
+
+// Add Band Member to Performance
+app.post("/performances/:id/add-member", authenticate, authorize(["ARTIST"]), async (req, res) => {
+  try {
+    const { newMemberUsername } = req.body;
+
+    // Validate the input
+    if (!newMemberUsername) {
+      return res.status(400).send("Username of the new member is required.");
+    }
+
+    // Find the performance by ID
+    const performance = await Performance.findById(req.params.id);
+    if (!performance) return res.status(404).send("Performance not found.");
+
+    // Ensure the user making the request is the creator of the performance
+    if (performance.creator.toString() !== req.user._id) {
+      return res.status(403).send("Only the creator of the performance can add band members.");
+    }
+
+    // Find the new member in the database
+    const newMember = await User.findOne({ username: newMemberUsername });
+    if (!newMember) {
+      return res.status(404).send("User with the given username not found.");
+    }
+
+    // Ensure the user is not already a band member
+    if (performance.bandMembers.includes(newMember.username)) {
+      return res.status(400).send("User is already a band member.");
+    }
+
+    // Add the user to the band members
+    performance.bandMembers.push(newMember.username);
+
+    // Optionally, update the user's role to ARTIST for this festival
+    newMember.role = "ARTIST";
+    await newMember.save();
+
+    // Save the updated performance
+    await performance.save();
+
+    res.status(200).send({
+      message: "Band member added successfully.",
+      performance,
+    });
+  } catch (error) {
+    res.status(500).send(error.message);
+  }
+});
+
 // Start Server
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
