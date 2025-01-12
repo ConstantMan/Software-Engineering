@@ -349,22 +349,229 @@ app.post(
   }
 );
 
+// Update Festival Details
+app.put("/festivals/:id", authenticate, authorize(["ORGANIZER"]), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updates = req.body;
+
+    // Find the festival by ID
+    const festival = await Festival.findById(id);
+    if (!festival) {
+      return res.status(404).send("Festival not found.");
+    }
+
+    // Check if the user is an organizer of the festival
+    if (!festival.organizers.includes(req.user._id)) {
+      return res.status(403).send("Access denied. You are not an organizer of this festival.");
+    }
+
+    // Update allowed fields
+    const allowedUpdates = ["name", "description", "dates", "venue"];
+    Object.keys(updates).forEach((key) => {
+      if (allowedUpdates.includes(key)) {
+        festival[key] = updates[key];
+      }
+    });
+
+    // Save the updated festival
+    await festival.save();
+
+    res.status(200).send(festival);
+  } catch (error) {
+    res.status(400).send(error.message);
+  }
+});
+
+
+// Start Final Submission Phase
+app.post(
+  "/festivals/:id/start-final-submission",
+  authenticate,
+  authorize(["ORGANIZER"]),
+  async (req, res) => {
+    try {
+      const festival = await Festival.findById(req.params.id);
+
+      if (!festival) {
+        return res.status(404).send("Festival not found.");
+      }
+
+      // Check if the festival is in the SCHEDULING state
+      if (festival.state !== "SCHEDULING") {
+        return res
+          .status(400)
+          .send(
+            "Festival must be in SCHEDULING state to start the final submission phase."
+          );
+      }
+
+      // Update the festival state to FINAL_SUBMISSION
+      festival.state = "FINAL_SUBMISSION";
+      await festival.save();
+
+      res.status(200).send({
+        message: "Festival state updated to FINAL_SUBMISSION.",
+        festival,
+      });
+    } catch (error) {
+      res.status(500).send(error.message);
+    }
+  }
+);
+
+
+// Start Decision Phase
+app.post(
+  "/festivals/:id/start-decision",
+  authenticate,
+  authorize(["ORGANIZER"]),
+  async (req, res) => {
+    try {
+      const festival = await Festival.findById(req.params.id);
+
+      if (!festival) {
+        return res.status(404).send("Festival not found.");
+      }
+
+      // Check if the festival is in the FINAL_SUBMISSION state
+      if (festival.state !== "FINAL_SUBMISSION") {
+        return res
+          .status(400)
+          .send(
+            "Festival must be in FINAL_SUBMISSION state to start the decision phase."
+          );
+      }
+
+      // Fetch all approved performances for the festival
+      const performances = await Performance.find({
+        festival: festival._id,
+        state: "APPROVED",
+      });
+
+      // Automatically reject approved performances that are not finally submitted
+      const rejectedPerformances = [];
+      for (const performance of performances) {
+        if (performance.state !== "FINAL_SUBMITTED") {
+          performance.state = "REJECTED";
+          await performance.save();
+          rejectedPerformances.push(performance.name);
+        }
+      }
+
+      // Update the festival state to DECISION
+      festival.state = "DECISION";
+      await festival.save();
+
+      res.status(200).send({
+        message: "Festival state updated to DECISION.",
+        rejectedPerformances,
+        festival,
+      });
+    } catch (error) {
+      res.status(500).send(error.message);
+    }
+  }
+);
+
+
+
+// Announce Festival
+app.post(
+  "/festivals/:id/announce",
+  authenticate,
+  authorize(["ORGANIZER"]),
+  async (req, res) => {
+    try {
+      const festival = await Festival.findById(req.params.id);
+
+      if (!festival) {
+        return res.status(404).send("Festival not found.");
+      }
+
+      // Check if the festival is in the DECISION state
+      if (festival.state !== "DECISION") {
+        return res
+          .status(400)
+          .send(
+            "Festival must be in DECISION state to be announced."
+          );
+      }
+
+      // Update the festival state to ANNOUNCED
+      festival.state = "ANNOUNCED";
+      await festival.save();
+
+      res.status(200).send({
+        message: "Festival state updated to ANNOUNCED. The festival is now locked and ready for public announcement.",
+        festival,
+      });
+    } catch (error) {
+      res.status(500).send(error.message);
+    }
+  }
+);
 // Get Festival by id
-app.get("/festivals/:id", authenticate, async (req, res) => {
+app.get("/festivals/:id", async (req, res) => {
   try {
     console.log("Fetching festival with ID:", req.params.id); // Debug
+
+    // Validate ObjectId
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).send("Invalid festival ID format.");
+    }
+
+    // Fetch festival by ID
     const festival = await Festival.findById(req.params.id).populate(
       "organizers",
       "username"
     );
-    if (!festival) return res.status(404).send("Festival not found.");
-    console.log("Fetched Festival:", festival); // Debug
-    res.status(200).send(festival);
+
+    if (!festival) {
+      return res.status(404).send("Festival not found.");
+    }
+
+    // Modify organizers to remove _id
+    const modifiedFestival = {
+      ...festival.toObject(),
+      organizers: festival.organizers.map((organizer) => ({
+        username: organizer.username,
+      })),
+    };
+
+    // Check for Authentication
+    const token = req.headers.authorization?.split(" ")[1];
+    if (!token) {
+      // Return all details except the ID if no authentication token is provided
+      const { _id, ...festivalDetails } = modifiedFestival;
+      return res.status(200).send(festivalDetails);
+    }
+
+    try {
+      // Verify the token
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+      // Find user in the database
+      const user = await User.findById(decoded._id);
+      if (!user || user.accountStatus === "INACTIVE") {
+        return res.status(403).send("Access denied. Invalid token.");
+      }
+
+      // Return full festival details
+      console.log("Fetched Festival:", modifiedFestival); // Debug
+      res.status(200).send(modifiedFestival);
+    } catch (error) {
+      // Invalid token, return all details except the ID
+      const { _id, ...festivalDetails } = modifiedFestival;
+      console.log("Invalid token provided, returning limited data.");
+      return res.status(200).send(festivalDetails);
+    }
   } catch (error) {
     console.error("Error fetching festival:", error); // Debug
-    res.status(500).send(error);
+    res.status(500).send("An error occurred while fetching the festival.");
   }
 });
+
 
 // Start Assignment Phase
 app.post(
@@ -408,6 +615,42 @@ app.post(
       res.status(200).send(festival);
     } catch (error) {
       res.status(400).send(error);
+    }
+  }
+);
+
+// Start Scheduling Phase
+app.post(
+  "/festivals/:id/start-scheduling",
+  authenticate,
+  authorize(["ORGANIZER"]),
+  async (req, res) => {
+    try {
+      const festival = await Festival.findById(req.params.id);
+
+      if (!festival) {
+        return res.status(404).send("Festival not found.");
+      }
+
+      // Check if the festival is in the REVIEW state
+      if (festival.state !== "REVIEW") {
+        return res
+          .status(400)
+          .send(
+            "Festival must be in REVIEW state to start the scheduling phase."
+          );
+      }
+
+      // Update the festival state to SCHEDULING
+      festival.state = "SCHEDULING";
+      await festival.save();
+
+      res.status(200).send({
+        message: "Festival state updated to SCHEDULING.",
+        festival,
+      });
+    } catch (error) {
+      res.status(500).send(error.message);
     }
   }
 );
@@ -503,7 +746,7 @@ app.post("/performances/:id/submit", authenticate, async (req, res) => {
 app.post(
   "/performances/:id/review",
   authenticate,
-  authorize(["STAFF"]),
+  authorize(["STAFF", "ORGANIZER"]), // Προστέθηκε και ο ρόλος ORGANIZER
   async (req, res) => {
     try {
       const performance = await Performance.findById(req.params.id);
@@ -517,11 +760,14 @@ app.post(
           .send("Performance must be in SUBMITTED state to be reviewed.");
       }
 
-      // Check if the logged-in user is the assigned STAFF
-      if (performance.staffAssigned.toString() !== req.user._id) {
+      // Check if the logged-in user is the assigned STAFF or ORGANIZER
+      if (
+        performance.staffAssigned.toString() !== req.user._id &&
+        req.user.role !== "ORGANIZER"
+      ) {
         return res
           .status(403)
-          .send("Only the assigned staff member can review this performance.");
+          .send("Only the assigned staff member or an organizer can review this performance.");
       }
 
       const { score, comments } = req.body;
@@ -543,6 +789,7 @@ app.post(
     }
   }
 );
+
 
 // Approve Performance
 app.post(
@@ -616,19 +863,24 @@ app.put("/performances/:id", authenticate, async (req, res) => {
     const performance = await Performance.findById(req.params.id);
 
     if (!performance) return res.status(404).send("Performance not found.");
-    if (performance.creator.toString() !== req.user._id) {
+
+    // Check if the logged-in user has the role of ARTIST or ORGANIZER
+    if (!["ARTIST", "ORGANIZER"].includes(req.user.role)) {
       return res
         .status(403)
-        .send("Only the creator can update this performance.");
+        .send("Only users with roles ARTIST or ORGANIZER can update this performance.");
     }
 
+    // Update the performance details
     Object.assign(performance, req.body);
     await performance.save();
+
     res.status(200).send(performance);
   } catch (error) {
-    res.status(400).send(error);
+    res.status(400).send(error.message);
   }
 });
+
 
 // Withdraw Performance
 app.delete("/performances/:id", authenticate, async (req, res) => {
