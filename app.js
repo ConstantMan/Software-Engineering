@@ -348,7 +348,6 @@ app.post(
     }
   }
 );
-
 // Update Festival Details
 app.put("/festivals/:id", authenticate, authorize(["ORGANIZER"]), async (req, res) => {
   try {
@@ -361,9 +360,9 @@ app.put("/festivals/:id", authenticate, authorize(["ORGANIZER"]), async (req, re
       return res.status(404).send("Festival not found.");
     }
 
-    // Check if the user is an organizer of the festival
-    if (!festival.organizers.includes(req.user._id)) {
-      return res.status(403).send("Access denied. You are not an organizer of this festival.");
+    // Prevent updates if the festival is ANNOUNCED
+    if (festival.state === "ANNOUNCED") {
+      return res.status(400).send("No updates allowed. Festival is announced.");
     }
 
     // Update allowed fields
@@ -382,6 +381,7 @@ app.put("/festivals/:id", authenticate, authorize(["ORGANIZER"]), async (req, re
     res.status(400).send(error.message);
   }
 });
+
 
 
 // Start Final Submission Phase
@@ -798,26 +798,37 @@ app.post(
   authorize(["ORGANIZER"]),
   async (req, res) => {
     try {
+      // Βρες το performance με βάση το ID
       const performance = await Performance.findById(req.params.id);
 
       if (!performance) return res.status(404).send("Performance not found.");
 
-      // Check if the performance is in the correct state
-      if (performance.state !== "REVIEWED") {
+      // Βρες το σχετικό festival
+      const festival = await Festival.findById(performance.festival);
+
+      if (!festival) return res.status(404).send("Festival not found.");
+
+      // Έλεγχος αν το festival είναι σε κατάσταση SCHEDULING
+      if (festival.state !== "SCHEDULING") {
         return res
           .status(400)
-          .send("Performance must be in REVIEWED state to be approved.");
+          .send("Festival must be in SCHEDULING state to approve performance.");
       }
 
+      // Ενημέρωση κατάστασης του performance
       performance.state = "APPROVED";
       await performance.save();
 
-      res.status(200).send(performance);
+      res.status(200).send({
+        message: "Performance approved successfully.",
+        performance,
+      });
     } catch (error) {
-      res.status(400).send(error);
+      res.status(500).send("An error occurred while approving the performance.");
     }
   }
 );
+
 
 // Final Submission for Performance
 app.post("/performances/:id/final-submit", authenticate, async (req, res) => {
@@ -888,21 +899,80 @@ app.delete("/performances/:id", authenticate, async (req, res) => {
     const performance = await Performance.findById(req.params.id);
 
     if (!performance) return res.status(404).send("Performance not found.");
-    if (performance.state === "SUBMITTED") {
-      return res.status(400).send("Cannot withdraw a submitted performance.");
+    
+    // Allow withdraw only if the state is CREATED
+    if (performance.state !== "CREATED") {
+      return res.status(400).send("Only performances in CREATED state can be withdrawn.");
     }
-    if (performance.creator.toString() !== req.user._id) {
+
+    // Ensure the user has the role of ARTIST
+    if (req.user.role !== "ARTIST") {
       return res
         .status(403)
-        .send("Only the creator can withdraw this performance.");
+        .send("Only users with the role of ARTIST can withdraw this performance.");
     }
 
     await performance.deleteOne();
     res.status(200).send("Performance withdrawn successfully.");
   } catch (error) {
-    res.status(400).send(error);
+    res.status(400).send(error.message);
   }
 });
+
+// Reject Performance
+app.post(
+  "/performances/:id/reject",
+  authenticate,
+  authorize(["ORGANIZER"]),
+  async (req, res) => {
+    try {
+      const performance = await Performance.findById(req.params.id);
+
+      if (!performance) return res.status(404).send("Performance not found.");
+
+      // Fetch the associated festival
+      const festival = await Festival.findById(performance.festival);
+      if (!festival) {
+        return res.status(404).send("Festival associated with performance not found.");
+      }
+
+      // Check if the festival is in the SCHEDULING state
+      if (festival.state !== "SCHEDULING") {
+        return res
+          .status(400)
+          .send("Festival must be in SCHEDULING state to reject a performance.");
+      }
+
+      // Check the performance's review score
+      if (!performance.review || performance.review.score >= 5) {
+        return res
+          .status(400)
+          .send("Performance cannot be rejected. The review score is acceptable.");
+      }
+
+      // Add rejection reason
+      const { rejectionReason } = req.body;
+      if (!rejectionReason) {
+        return res.status(400).send("Rejection reason is required.");
+      }
+
+      // Update performance state and rejection reason
+      performance.state = "REJECTED";
+      performance.rejectionReason = rejectionReason;
+
+      await performance.save();
+
+      res.status(200).send({
+        message: "Performance rejected successfully.",
+        performance,
+      });
+    } catch (error) {
+      res.status(400).send(error.message);
+    }
+  }
+);
+
+
 
 // Assign Staff to Performance
 app.post(
@@ -932,6 +1002,53 @@ app.post(
   }
 );
 
+// Accept Performance During DECISION State
+app.post(
+  "/performances/:id/accept",
+  authenticate,
+  authorize(["ORGANIZER"]),
+  async (req, res) => {
+    try {
+      const performance = await Performance.findById(req.params.id);
+
+      if (!performance) return res.status(404).send("Performance not found.");
+
+      // Fetch the associated festival
+      const festival = await Festival.findById(performance.festival);
+      if (!festival) {
+        return res.status(404).send("Festival associated with performance not found.");
+      }
+
+      // Check if the festival is in the DECISION state
+      if (festival.state !== "DECISION") {
+        return res
+          .status(400)
+          .send("Festival must be in DECISION state to accept a performance.");
+      }
+
+      // Check if the performance is in APPROVED state
+      if (performance.state !== "APPROVED") {
+        return res
+          .status(400)
+          .send(
+            "Performance must be in APPROVED state to be accepted during DECISION."
+          );
+      }
+
+      // Update performance state to ACCEPTED
+      performance.state = "SCHEDULED";
+
+      await performance.save();
+
+      res.status(200).send({
+        message: "Performance accepted and scheduled successfully.",
+        performance,
+      });
+    } catch (error) {
+      res.status(400).send(error.message);
+    }
+  }
+);
 
 
 // Add Band Member to Performance
@@ -982,6 +1099,80 @@ app.post("/performances/:id/add-member", authenticate, authorize(["ARTIST"]), as
     res.status(500).send(error.message);
   }
 });
+
+// Search Performances Route
+app.get("/performances/search", async (req, res) => {
+  try {
+    const { name, artist, genre } = req.query;
+
+    const searchCriteria = {};
+
+    if (name) {
+      const nameWords = name.split(" ").map((word) => ({
+        name: { $regex: word, $options: "i" },
+      }));
+      searchCriteria.$and = [...(searchCriteria.$and || []), ...nameWords];
+    }
+
+    if (artist) {
+      const artistWords = artist.split(" ").map((word) => ({
+        bandMembers: { $regex: word, $options: "i" },
+      }));
+      searchCriteria.$and = [...(searchCriteria.$and || []), ...artistWords];
+    }
+
+    if (genre) {
+      const genreWords = genre.split(" ").map((word) => ({
+        genre: { $regex: word, $options: "i" },
+      }));
+      searchCriteria.$and = [...(searchCriteria.$and || []), ...genreWords];
+    }
+
+    let performances = await Performance.find(searchCriteria);
+
+    // Sort performances first by genre, then by name
+    performances.sort((a, b) => {
+      if (a.genre.toLowerCase() < b.genre.toLowerCase()) return -1;
+      if (a.genre.toLowerCase() > b.genre.toLowerCase()) return 1;
+      return a.name.toLowerCase().localeCompare(b.name.toLowerCase());
+    });
+
+    // Check for Authentication
+    const token = req.headers.authorization?.split(" ")[1];
+    let userRole = null;
+
+    if (token) {
+      try {
+        // Decode token to determine role
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        const user = await User.findById(decoded._id);
+        if (user && user.accountStatus === "ACTIVE") {
+          userRole = user.role;
+        }
+      } catch (err) {
+        console.error("Invalid or expired token provided.");
+      }
+    }
+
+    // Modify response based on role
+    const modifiedPerformances = performances.map((performance) => {
+      const performanceObject = performance.toObject();
+
+      if (!userRole || !["ADMIN", "ORGANIZER", "ARTIST"].includes(userRole)) {
+        const { _id, ...rest } = performanceObject;
+        return rest; // Exclude _id for roles other than ADMIN, ORGANIZER, ARTIST
+      }
+
+      return performanceObject; // Include all fields for allowed roles
+    });
+
+    res.status(200).send(modifiedPerformances);
+  } catch (error) {
+    res.status(500).send(error.message);
+  }
+});
+
+
 
 // Start Server
 app.listen(PORT, () => {
