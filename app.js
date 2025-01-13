@@ -165,17 +165,154 @@ const authorize = (roles) => (req, res, next) => {
 };
 
 // Routes
-// User Registration
+// User Registration with Password and Username Validation and Double Input Check
 app.post("/users/register", async (req, res) => {
   try {
-    const { username, password, role } = req.body;
+    const { username, password, confirmPassword, role } = req.body;
+
+    /*
+    // Username validation
+    const usernameRegex = /^[a-zA-Z][a-zA-Z0-9_]{4,}$/;
+    if (!usernameRegex.test(username)) {
+      return res
+        .status(400)
+        .send(
+          "Username must start with a letter and be at least 5 characters long, containing only letters, numbers, or underscores."
+        );
+    }
+
+    // Password validation
+    const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[\W_]).{8,}$/;
+    if (!passwordRegex.test(password)) {
+      return res
+        .status(400)
+        .send(
+          "Password must be at least 8 characters long, include at least one uppercase letter, one lowercase letter, one digit, and one special character."
+        );
+    }
+
+    // Confirm password check
+    if (password !== confirmPassword) {
+      return res.status(400).send("Passwords do not match.");
+    }
+  */
+
+    // Check if username already exists
+    const existingUser = await User.findOne({ username });
+    if (existingUser) {
+      return res.status(400).send("Username is already taken.");
+    }
+  
+
+    // Create and save new user
     const user = new User({ username, password, role });
     await user.save();
     res.status(201).send("User registered successfully.");
   } catch (error) {
-    res.status(400).send(error);
+    res.status(400).send(error.message || "An error occurred during registration.");
   }
 });
+
+
+// Update User Information
+app.put("/users/:id", authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updates = req.body;
+
+    // Find user by ID
+    const user = await User.findById(id);
+    if (!user) return res.status(404).send("User not found.");
+
+    // Check if the authenticated user is the owner or an admin
+    if (req.user._id !== id && req.user.role !== "ADMIN") {
+      return res.status(403).send("Access denied.");
+    }
+
+    // Prevent updating password
+    if (updates.password) {
+      return res
+        .status(400)
+        .send("Password cannot be updated using this endpoint.");
+    }
+
+    // Check if username is being changed
+    const isUsernameChanged = updates.username && updates.username !== user.username;
+
+    // Update user details
+    Object.assign(user, updates);
+    await user.save();
+
+    // Invalidate token if username changes
+    if (isUsernameChanged) {
+      return res
+        .status(200)
+        .send("Username updated. Please log in again with the new username.");
+    }
+
+    res.status(200).send("User information updated successfully.");
+  } catch (error) {
+    res.status(400).send(error.message);
+  }
+});
+
+
+// Change User Password
+app.post("/users/change-password", authenticate, async (req, res) => {
+  try {
+    const { oldPassword, newPassword, confirmPassword } = req.body;
+
+    // Validate inputs
+    if (!oldPassword || !newPassword || !confirmPassword) {
+      return res
+        .status(400)
+        .send("Old password, new password, and confirmation are required.");
+    }
+
+    if (newPassword !== confirmPassword) {
+      return res.status(400).send("Passwords do not match.");
+    }
+
+    // Find the user
+    const user = await User.findById(req.user._id);
+    if (!user) return res.status(404).send("User not found.");
+
+    // Check old password
+    const isMatch = await bcrypt.compare(oldPassword, user.password);
+    if (!isMatch) {
+      // Track failed attempts
+      user.failedPasswordAttempts = (user.failedPasswordAttempts || 0) + 1;
+      await user.save();
+
+      // Deactivate account after 3 failed attempts
+      if (user.failedPasswordAttempts >= 3) {
+        user.accountStatus = "INACTIVE";
+        await user.save();
+        return res
+          .status(403)
+          .send("Account deactivated due to multiple failed attempts.");
+      }
+
+      return res.status(400).send("Old password is incorrect.");
+    }
+
+    // Reset failed attempts
+    user.failedPasswordAttempts = 0;
+
+    // Update password
+    user.password = newPassword;
+    await user.save();
+
+    res
+      .status(200)
+      .send("Password updated successfully. Please log in again.");
+  } catch (error) {
+    res.status(500).send(error.message);
+  }
+});
+
+
+
 
 /* User Login Old
 app.post("/users/login", async (req, res) => {
